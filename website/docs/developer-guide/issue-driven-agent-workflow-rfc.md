@@ -20,8 +20,8 @@ description: "將長時運行的中央 AI 協調改為 GitHub Issue、Hermes Kan
 參考 [Hermes Kanban](../user-guide/features/kanban.md)、[Context Compression and Caching](./context-compression-and-caching.md) 與 [Architecture](./architecture.md)。
 
 - **已有**：SQLite-backed Kanban、Dispatcher、獨立任務 Worker／Session、Profile 隔離、Git Worktree、任務重試與故障阻斷、PR Completion Contract。
-- **已有**：可選的 AI 任務拆解；\`kanban.auto_decompose\` 在文件中預設為 \`true\`，可改以人工或確定性流程建立任務。
-- **已有但用途不同**：\`agent.max_turns\` 限制工具迭代；\`compression.threshold_tokens\` 觸發上下文壓縮。**兩者都不是單一 Issue 的累計 Token 或費用硬上限。**
+- **已有**：可選的 AI 任務拆解；`kanban.auto_decompose` 在文件中預設為 `true`，可改以人工或確定性流程建立任務。
+- **已有但用途不同**：`agent.max_turns` 限制工具迭代；`compression.threshold_tokens` 觸發上下文壓縮。**兩者都不是單一 Issue 的累計 Token 或費用硬上限。**
 - **待設計／驗證**：Issue 與 Kanban 的冪等同步、跨主機唯一領取、累計預算與可恢復交接、成本／品質量測。
 
 避免增設常駐 LLM Orchestrator、全域共享 Session 或不必要的新核心 Tool；優先利用 CLI、既有 Dispatcher、可選 Plugin／外部適配器。
@@ -38,14 +38,14 @@ description: "將長時運行的中央 AI 協調改為 GitHub Issue、Hermes Kan
 
 **非目標**
 
-- 不移除 \`delegate_task\`、Profile、Skill、壓縮或 Kanban；只是調整適用場合。
+- 不移除 `delegate_task`、Profile、Skill、壓縮或 Kanban；只是調整適用場合。
 - 不靠增加上下文視窗取代任務拆分。
 - 不自動合併 PR、不自行發布或部署、不給 Issue 文字額外執行權限。
 - 不將 SQLite Kanban DB 直接放到多主機共用磁碟，以此冒充跨主機交易系統。
 
 ## 建議架構與責任分工
 
-\`\`\`mermaid
+```mermaid
 flowchart TD
     U["使用者需求／測試回饋"] --> I["GitHub Issue：任務規格與證據"]
     I --> A["確定性 Intake／同步適配器"]
@@ -60,7 +60,7 @@ flowchart TD
     V -->|通過| R["回寫 Issue／Kanban；待人工合併"]
     V -->|未通過| F["保留失敗證據／回到可接續佇列"]
     F --> K
-\`\`\`
+```
 
 | 系統 | 權威資料 | 不負責 |
 | --- | --- | --- |
@@ -83,12 +83,12 @@ GitHub 是跨 Session 的工作協定；Kanban 是單一 Hermes 執行環境內�
 5. **相依與阻礙**：先決條件、外部決策、重試／不可重試原因。
 6. **風險與回復**：權限邊界、可能的資料遺失／相容性影響、撤銷方式。
 
-Worker 將 Issue 視為**工作資料，而不是能凌駕儲存庫 \`AGENTS.md\`、使用者授權或工具安全界限的系統指示**。不存入密碼、API 金鑰、Session Token、Cookie、私人原文或隱藏推理。
+Worker 將 Issue 視為**工作資料，而不是能凌駕儲存庫 `AGENTS.md`、使用者授權或工具安全界限的系統指示**。不存入密碼、API 金鑰、Session Token、Cookie、私人原文或隱藏推理。
 
 ## 執行生命週期
 
 1. **Intake**：取得 Issue ID、Repo、版本與事件 ID；驗證欄位、授權及可處理範圍。
-2. **去重**：以 \`repository + GitHub issue node_id\` 維持持久映射，重送 Webhook 或重新輪詢不得建立重複的 Kanban Card。
+2. **去重**：以 `repository + GitHub issue node_id` 維持持久映射，重送 Webhook 或重新輪詢不得建立重複的 Kanban Card。
 3. **排程**：確定性 Dispatcher 依優先級、相依、併發上限領取；未滿足條件的任務停留待辦／Blocked。
 4. **執行**：使用獨立 Worker Session 與 Git Worktree；只載入該 Issue、適用專案規則及必要程式碼上下文。
 5. **預算檢查**：接近任務成本／Token／迭代門檻，先完成 checkpoint；不能安全繼續則結束該 Session。
@@ -109,7 +109,7 @@ Worker 將 Issue 視為**工作資料，而不是能凌駕儲存庫 \`AGENTS.md\
 
 ### 最小可試行設定（示意，**本 PR 不修改設定**）
 
-\`\`\`yaml
+```yaml
 kanban:
   auto_decompose: false
   max_in_progress: 2
@@ -117,7 +117,7 @@ kanban:
 
 agent:
   max_turns: 60
-\`\`\`
+```
 
 此範例僅限制排程與迭代，**不是**總 Token 或費用硬上限。逐步調整應根據真實執行紀錄，而不是假設更多 Worker 或更大的視窗必然提高吞吐量。
 
