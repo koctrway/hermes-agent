@@ -14,14 +14,14 @@
 
 1. 保留 subscription 的原 profile／chat／thread；LOCAL 來源需有原生 receipt，未知或活躍 legacy owner 保留待處理，不猜 worker Session。
 2. `claimed` 為開始；`progress:`／`進度：` 留言為重要進展；終態及 review／needs_input 沿用現有事件。`commented` payload 增加原留言的 `comment_id`，讓選取與持久版本都由真實事件定位；普通留言與 edited 等 metadata 事件不覆蓋業務階段。連續相同正規化需求共用首個事件版本，A→B→A 的最後 A 則有新版本；commit 後 cursor 失敗沿用原收據及首次 payload。舊 payload 沒有 comment_id 時，只核對同作者／同時間且唯一的原留言，無法唯一核對時沿用已確認的狀態事件，不猜需求內容。
-3. 送出前及執行前唯讀讀取目前卡片與訂閱；舊狀態改為目前快照，取消訂閱或封存則略過。
+3. 送出前及執行前唯讀讀取目前卡片與訂閱；舊狀態改為目前快照。明確取消訂閱則略過；封存保留最後有效事件及原來源，直到對應原生 admission 為 `terminal/completed` 才移除訂閱，入列與待處理收據均不等於交付完成。
 4. 保留 FIFO 與 unknown／審批，不加入社群 PR 的 human-first 排序，也不自動清除租約。
 
 以上邊界依本次任務原文「原生單一 writer/FIFO」「舊狀態刷新、需求版本去重、多來源隔離、來源未知拒絕猜測」「不繞過 session 協調／審批、不清租約」；適用於本候選的 LOCAL 通知，其他平台沿用原行為。來源為 legacy 時，仍可由原生正常 resume／同 profile control ticket 在原 owner 釋放後收編，候選本身不代辦遷移。
 
 ## 相容性與回退
 
-LOCAL `notify` 保留被動語意：在 FIFO 頭由 authority 寫入既有 completion note，沒有模型推論。`wake`／`notify+wake` 才使用原生報告回合與 internal notification card。LOCAL 訂閱保留到 archive；cursor 僅證明 durable 入列，30 天 GC 無法據此判斷模型是否已執行。其他平台及 loop ticks 保持不變。此為向下相容錯誤修正，建議下一正式版本 PATCH；fork 沒有已發布 Release，查詢時上游最新 Release 為 `v0.23.3`，兩者不混稱；本分支不發版。
+LOCAL `notify` 保留被動語意：在 FIFO 頭由 authority 寫入既有 completion note，沒有模型推論。`wake`／`notify+wake` 才使用原生報告回合與 internal notification card。LOCAL 訂閱保留到 archive 的最後有效通知有完成收據；cursor 僅證明 durable 排隊，30 天 GC 無法據此判斷模型是否已執行。封存等待期間保留未讀 archive 事件以重試，清理失敗也可重試；failed／cancelled／unknown 收據保留來源，循原生故障處理，不自動重新執行或解除 fencing。其他平台及 loop ticks 保持不變。此為向下相容錯誤修正，建議下一正式版本 PATCH；fork 沒有已發布 Release，查詢時上游最新 Release 為 `v0.23.3`，兩者不混稱；本分支不發版。
 
 部署方案為：由協調者取得維運授權，核對現役來源版本與差異，備份程式及狀態，正常 drain／restart；依原 native 同 profile control ticket／resume 完成必要 legacy 收編，再逐卡核對 LOCAL 原來源訂閱。活躍舊 writer 仍回 `runtime_coordination_required`，等待原 owner 正常釋放；不代辦清租約。舊 helper 的重複投遞切換另由維運協調，本候選沒有修改服務、排程或憑證。
 
@@ -38,7 +38,7 @@ HERMES_PYTHON=/path/to/pm-test-env/bin/python scripts/run_tests.sh \
 python scripts/check
 ```
 
-`test_kanban_local_daemon.py` 使用普通 gateway 程序、真實 WebSocket／SQLite 與 loopback 模型；驗證忙碌 FIFO、人類訊息先於後來通知、同卡需求替換、無 viewer 的離線事件重啟補送、被動 note 零推論。可用測試 runner 既有的 `HERMES_E2E_ARTIFACTS` 保存去私密 receipt。模型端點是隔離測試邊界，這不是對正式模型或 Desktop 畫面的驗收。
+`test_kanban_local_daemon.py` 使用普通 gateway 程序、真實 WebSocket／SQLite 與 loopback 模型；驗證忙碌 FIFO、人類訊息先於後來通知、同卡需求替換、無 viewer 的離線事件重啟補送、被動 note 零推論。封存返修另驗證兩個停機時序，各涵蓋 `notify`／`wake`／`notify+wake`：事件尚未入列即離線封存，以及已 durable 入列後停機封存；後者只在隔離 owner 的 commit／schedule 間設測試停點，恢復端使用普通 daemon。讀回最後有效 completed 摘要、原來源 transcript、每卡一筆 admission 及完成收據後的訂閱清理；明確 unsubscribe 仍不觸發 note／模型。可用測試 runner 既有的 `HERMES_E2E_ARTIFACTS` 保存去私密 receipt。模型端點是隔離測試邊界，這不是對正式模型或 Desktop 畫面的驗收。
 
 ## 社群 PR 評估
 

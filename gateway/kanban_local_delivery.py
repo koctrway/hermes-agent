@@ -52,21 +52,29 @@ def snapshot(reference):
                            "AND chat_id=? AND notifier_profile=? AND thread_id=''",
                            (task_id, chat_id, profile)).fetchone()
         task = conn.execute('SELECT * FROM tasks WHERE id=?', (task_id,)).fetchone()
-        if not sub or not task or task['status'] == 'archived':
+        if not sub or not task:
             return None
         from gateway.kanban_watchers_notifier import TERMINAL_KINDS
-        kinds = (*TERMINAL_KINDS, 'claimed')
+        # 封存是收尾，不是取消；保留封存前最後有效階段及其持久版本。
+        kinds = (*(kind for kind in TERMINAL_KINDS if kind != 'archived'), 'claimed')
         event = conn.execute('SELECT id,kind,payload FROM task_events WHERE task_id=? AND kind IN ('
                              + ','.join('?' for _ in kinds) + ') ORDER BY id DESC LIMIT 1', (task_id, *kinds)).fetchone()
         payload = json.loads(event['payload'] or '{}') if event else {}
+        status = task['status']
+        if status == 'archived' and event:
+            status = payload.get('status') or {
+                'blocked': 'blocked', 'block_loop_detected': 'triage', 'gave_up': 'blocked',
+            }.get(event['kind'], status)
         detail = (payload.get('reason') or payload.get('summary') or payload.get('error')
-                  or (task['result'] if task['status'] == 'done' else '') or '')
-        phase = ('needs_input' if task['status'] == 'blocked' and payload.get('kind') == 'needs_input'
+                  or (task['result'] if task['status'] == 'done' or event and event['kind'] == 'completed' else '') or '')
+        phase = ('needs_input' if status == 'blocked' and payload.get('kind') == 'needs_input'
                  else event['kind'] if event else task['status'])
         version = event['id'] if event else 0
-        comment = comment_version(conn, task_id, version, task['status'])
+        comment = comment_version(conn, task_id, version, status)
         if comment:
             phase, detail, version = comment
+        if task['status'] == 'archived' and event is None and comment is None:
+            return None  # 純封存維持靜默；只有既有業務通知需要補送。
         state = {'task_id': task_id, 'title': task['title'], 'status': task['status'], 'phase': phase,
                  'run_id': task['current_run_id'], 'detail': str(detail)}
     from agent.redact import redact_sensitive_text
@@ -122,7 +130,8 @@ async def admit_notice(authority, ref, live, reference, current):
     existing = await asyncio.to_thread(find_session_admission, authority.db,
         principal_id=principal, session_id=ref.session_id, request_id=identity)
     if existing is not None:
-        return  # 同一持久版本的重試，保留首次 payload；執行時另讀最新快照。
+        # cursor 只證明入列；只有原生完成收據才允許封存清理。
+        return existing['status'] == 'terminal' and existing['outcome'] == 'completed'
     event = MessageEvent(text=notice_text(text), source=live.source, internal=True, message_id=identity,
         metadata={'gateway_session_key': live.route, 'kanban_notice': reference,
                   'gateway_session_id': authority.physical_target(ref),
@@ -133,6 +142,7 @@ async def admit_notice(authority, ref, live, reference, current):
         and r['principal_id'] == principal
         and r['payload'].get('local_automation_v1', {}).get('kanban_notice') == reference), None)
     await authority.admit_automation(adapter, event, identity, replaces=replaced)
+    return False
 
 
 async def deliver(notification):
@@ -160,7 +170,12 @@ async def deliver(notification):
                              sub['chat_id'], sub['notifier_profile']]
             current = await asyncio.to_thread(snapshot, reference)
             if current is not None:
-                await admit_notice(authority, ref, live, reference, current)
+                completed = await admit_notice(authority, ref, live, reference, current)
+                if json.loads(current[0])['status'] == 'archived':
+                    # 保留 archive 事件未讀，供重啟後讀回同一 receipt，再安全清理。
+                    if completed:
+                        await n.unsub()
+                    return
         await n.advance()
         if n.task and n.task.status == 'archived':
             await n.unsub()

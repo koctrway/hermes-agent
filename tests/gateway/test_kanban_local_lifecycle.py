@@ -176,20 +176,26 @@ async def test_unknown_origin_keeps_cursor_and_does_not_use_worker_session(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_unsubscribe_queued_notice_skips_model(tmp_path, monkeypatch):
+@pytest.mark.parametrize('mode', ['notify', 'wake', 'notify+wake'])
+@pytest.mark.parametrize('archived', [False, True])
+async def test_unsubscribe_queued_notice_skips_model(tmp_path, monkeypatch, mode, archived):
     from gateway.session_ingress import execute_admission
     runner, authority, ref = await setup_local(tmp_path, monkeypatch)
     tid = subscription_task(ref)
     with closing(kbc.connect()) as conn:
+        kbn.add_notify_sub(conn, task_id=tid, platform='local', chat_id=ref.session_id, delivery_mode=mode)
         kb.complete_task(conn, tid, summary='retired fixture')
     await tick(runner, tid)
     row = list_session_admissions(authority.db, session_id=ref.session_id)[0]
     with closing(kbc.connect()) as conn:
+        if archived:
+            kb.archive_task(conn, tid)
         kbn.remove_notify_sub(conn, task_id=tid, platform='local', chat_id=ref.session_id)
     async def unexpected(event):
         pytest.fail('unsubscribed event reached model')
     runner._handle_message = unexpected
     assert await execute_admission(authority, ref, row) == ''
+    assert authority.db.get_messages_as_conversation(ref.session_id) == []
 
 
 @pytest.mark.asyncio
@@ -210,16 +216,49 @@ async def test_notify_only_is_a_durable_note_without_inference(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_archive_releases_local_subscription(tmp_path, monkeypatch):
+@pytest.mark.parametrize('mode', ['notify', 'wake', 'notify+wake'])
+@pytest.mark.parametrize('queued_first', [False, True])
+async def test_archive_retains_origin_until_final_notice_completes(tmp_path, monkeypatch, mode, queued_first):
+    import json
     runner, authority, ref = await setup_local(tmp_path, monkeypatch)
     tid = subscription_task(ref)
     with closing(kbc.connect()) as conn:
+        kbn.add_notify_sub(conn, task_id=tid, platform='local', chat_id=ref.session_id, delivery_mode=mode)
         kb.complete_task(conn, tid, summary='finished fixture')
+    if queued_first:
+        await tick(runner, tid)
+    with closing(kbc.connect()) as conn:
         kb.archive_task(conn, tid)
+    await tick(runner, tid)
+    await tick(runner, tid)  # 尚未執行時重試，不能提前清理或新增重複 admission。
+    with closing(kbc.connect()) as conn:
+        subs = kbn.list_notify_subs(conn, tid)
+        assert len(subs) == 1, 'archive revoked the source of an undelivered final notice'
+        assert subs[0]['chat_id'] == ref.session_id and subs[0]['delivery_mode'] == mode
+    rows = list_session_admissions(authority.db, session_id=ref.session_id)
+    assert len(rows) == 1
+    received = []
+
+    async def handle(event):
+        received.append(event.text)
+        return 'fixture response'
+    runner._handle_message = handle
+    await authority._drain(ref)
+    settled = list_session_admissions(authority.db, session_id=ref.session_id, pending_only=False)
+    assert len(settled) == 1 and settled[0]['outcome'] == 'completed'
+    if mode == 'notify':
+        assert received == []
+        text = str(authority.db.get_messages_as_conversation(ref.session_id))
+    else:
+        assert len(received) == 1
+        text = received[0]
+        state = json.loads(text.splitlines()[0].removeprefix('[kanban] '))
+        assert state['phase'] == 'completed' and state['status'] == 'archived'
+    assert 'finished fixture' in text
     await tick(runner, tid)
     with closing(kbc.connect()) as conn:
         assert kbn.list_notify_subs(conn, tid) == []
-    assert list_session_admissions(authority.db, session_id=ref.session_id) == []
+    assert len(list_session_admissions(authority.db, session_id=ref.session_id, pending_only=False)) == 1
 
 
 @pytest.mark.asyncio
