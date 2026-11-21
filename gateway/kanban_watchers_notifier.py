@@ -311,6 +311,14 @@ class _Collector:
         if _adapter_for_subscription(self.runner, Platform(platform), sub, owner_profile or self.notifier_profile) is None:
             _warn_anchorless_thread_sub_once(sub, platform)
             return None
+        if platform == 'local':
+            # 原生 admission 去重；cursor 在 durable 接受後才前移，程序中斷仍可重試。
+            cursor, events = _kbn().unseen_events_for_sub(
+                conn, task_id=sub['task_id'], platform=platform, chat_id=sub['chat_id'],
+                thread_id=sub.get('thread_id') or '', kinds=(*TERMINAL_KINDS, 'claimed', 'commented'))
+            return ({'sub': sub, 'old_cursor': sub['last_event_id'], 'cursor': cursor,
+                     'events': events, 'task': self.kb.get_task(conn, sub['task_id']), 'board': slug}
+                    if events else None)
         old_cursor, cursor, events = _kbn().claim_unseen_events_for_sub(
             conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
             thread_id=sub.get("thread_id") or "", kinds=TERMINAL_KINDS,
@@ -746,6 +754,10 @@ class _KanbanNotification:
         return True
 
     async def deliver(self) -> None:
+        if self.platform_str == 'local':
+            from gateway.kanban_local_delivery import deliver
+            await deliver(self)
+            return
         try:
             self.plat = self.platform_cls(self.platform_str)
         except ValueError:

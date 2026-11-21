@@ -295,7 +295,8 @@ def purge_stale_done_notify_subs(conn: sqlite3.Connection, *, max_age_days: int 
     cutoff = int(time.time()) - days * 86400
     with _kb.write_txn(conn):
         cur = conn.execute(
-            "DELETE FROM kanban_notify_subs WHERE task_id IN ("
+            # LOCAL 的 cursor 只保證入列；保留至 archive，避免 GC 撤銷仍排隊的通知。
+            "DELETE FROM kanban_notify_subs WHERE platform != 'local' AND task_id IN ("
             " SELECT t.id FROM tasks t"
             " WHERE t.status IN ('done', 'blocked')"
             " AND COALESCE("
